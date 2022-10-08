@@ -1,0 +1,244 @@
+################################################
+VLANs + DHCP Config
+################################################
+
+config system interface
+    edit "Phones"
+        set vdom "root"
+        set ip 192.168.117.1 255.255.255.0
+        set device-identification enable
+        set role lan
+        set snmp-index 45
+        set interface "fortilink"
+        set vlanid 117           <--VLAN 117 for VOIP phones
+    next
+	edit "Prod"
+        set vdom "root"
+        set ip 192.168.111.1 255.255.255.0
+        set interface "fortilink"
+        set vlanid 100           <--VLAN 100 for PC's/other devices
+	next
+end
+
+config system dhcp server
+    edit 11
+        set dns-service default
+        set default-gateway 192.168.117.1
+        set netmask 255.255.255.0
+        set interface "Phones"
+        config ip-range
+            edit 1
+                set start-ip 192.168.117.2
+                set end-ip 192.168.117.254
+            next
+        end
+        config options
+            edit 1
+                set code 66
+                set type string
+                set value "https://192.168.111.111:443/provisioning/"   <-- tell phones about FortiVoice IP
+            next
+        end
+    next
+end
+
+
+################################################
+LLDP-MED
+################################################
+
+config switch-controller lldp-profile
+    edit "Phones-LLDP"
+        set med-tlvs inventory-management network-policy location-identification
+        set auto-isl disable
+        config med-network-policy
+            edit "voice"
+                set status enable
+                set vlan-intf "Phones"    <--- tell LLDP-MED enabled phones to tag VLAN ID 117 for voice traffic
+                set assign-vlan enable
+                set dscp 46         <--- tell LLDP-MED enabled phones to classify voice traffic as high priority
+            next
+            edit "voice-signaling"
+                set status enable
+                set vlan-intf "Phones"
+                set assign-vlan enable
+                set dscp 46
+        end
+    next
+end
+
+
+################################################
+QoS
+################################################
+
+config switch-controller qos ip-dscp-map
+    edit "test-dscp"
+        config map
+            edit "2"
+                set cos-queue 5  <----map traffic to queue 5 when...
+                set value 46     <----..packets with DSCP value 46 in the IP header arrive
+            next
+        end
+    next
+end
+
+
+config switch-controller qos qos-policy
+    edit "test-qos"
+        set trust-ip-dscp-map "test-dscp"  <--- dscp map reference
+    next
+end
+
+config switch-controller auto-config policy
+    edit "voice-icl"
+        set qos-policy "test-qos"  <-------
+        set poe-status disable
+        set igmp-flood-report enable
+        set igmp-flood-traffic enable
+    next
+	edit "voice-trunk"
+        set qos-policy "test-qos" <--------
+        set poe-status disable
+    next
+end
+
+config switch-controller auto-config default  <--- Default FortiLink and ISL and ICL auto-config policy
+    set fgt-policy "voice-trunk"
+    set isl-policy "voice-trunk"
+    set icl-policy "voice-icl"
+end
+
+################################################
+Apply LLDP + Qos Configuration to individual FortiSwitch ports
+################################################
+
+config switch-controller managed-switch
+    edit "S224EPTF21001160"
+        config ports
+            edit "port11"
+                set vlan "Prod"   <--- PC traffic will be tagged by switch for VLAN 100 (ie. Prod VLAN)
+                set allowed-vlans "Phones"  <-- Traffic to switch tagged with VLAN 117 will be allowed to be transmitted/received(ie. Phones VLAN)
+                set qos-policy "test-qos" <--- apply QoS policy to switchport
+                set lldp-profile "Phones-LLDP" <-- apply LLDP policy to switchport
+            next
+            edit "port12"
+                set vlan "Prod"
+                set allowed-vlans "Phones" 
+                set qos-policy "test-qos"
+                set lldp-profile "Phones-LLDP"
+            next
+        end
+    next
+end
+
+
+
+
+
+################################################
+Troubleshooting/Verification commands
+################################################
+
+
+##############
+LLDP
+##############
+# diag switch-controller switch-info lldp neighbors-detail S224EPTF21001160 port11    <---substitute your switch SN and port where phone is connected
+
+Vdom: root
+Managed Switch : S224EPTF21001160       0
+
+Capability codes:
+        R:Router, B:Bridge, T:Telephone, C:DOCSIS Cable Device
+        W:WLAN Access Point, P:Repeater, S:Station, O:Other
+
+MED TLV Capability codes:
+        C:Capabilities, P:Network Policies, L:Location, S:MDI PSE
+        D:MDI PD, I:Inventory
+
+_______________________________________________________________
+Neighbor learned on port port11 by LLDP protocol
+Last change 243571 seconds ago
+Last packet received 51 seconds ago
+
+Chassis ID: e8:ed:d6:3f:6e:b0 (mac)
+System Name: FF-480TW21005603
+System Description:
+FortiFone-480 v3.0 build234 2022.07.21 (GA)
+
+Time To Live: 240 seconds
+System Capabilities: BT
+Enabled Capabilities: BT
+MED type: Media Endpoint (Class II)
+MED Capabilities: CPLSDI
+Software Rev: v3.0 build234
+Hardware Rev: FortiFone-480
+Manufacturer: Fortinet
+Model: FortiFone-480
+Serial Number: FF-480TW21005603
+Management IP Address: 192.168.117.3
+Management IP Address: fe80::eaed:d6ff:fe3f:6eb0
+
+Port ID: e8:ed:d6:3f:6e:b0 (mac)
+Port description: eth0
+IEEE802.1, VLAN Names:
+ ID: 117 Name: vlan117
+IEEE802.3, MAC/PHY Configuration/Status:
+ Autoneg support: Supported
+ Autoneg enabled: Enabled
+ Autoneg advertised: 0x6c01
+        1000BASE-T(full duplex mode)
+        100BASE-T(full duplex mode)
+        100BASE-T(half duplex mode)
+        10BASE-T(full duplex mode)
+        10BASE-T(half duplex mode)
+ MAU type: 1000BASETFD - Four-pair Category 5 UTP, full duplex mode
+LLDP-MED, Network Policies:
+ voice: VLAN: 117 (tagged), Priority: 4 DSCP: 46    <---phone will tag voice traffic with VLAN 117 and use DSCP 46
+ voice-signaling: VLAN: 117 (tagged), Priority: 4 DSCP: 46
+ 
+ 
+##############
+QoS
+############## 
+
+
+# diag switch-controller switch-info qos-stats S224EPTF21001160 port11
+Vdom: root
+
+S224EPTF21001160:
+port11 QoS Stats:
+
+ queue |              pkts |             bytes |         drop pkts
+------------------------------------------------------------------
+     0 |           2966903 |        2147418767 |                 0
+     1 |                 0 |                 0 |                 0
+     2 |                 0 |                 0 |                 0
+     3 |                24 |              1632 |                 0
+     4 |            363909 |          23290728 |                 0
+     5 |             87292 |          19358867 |                 0    <-------- BEFORE making a call between phones on port11 and port12 (87292 packets)
+     6 |                 0 |                 0 |                 0
+     7 |            524634 |          81794309 |                 0
+---------------------------------------------------------------------------------------
+
+
+
+
+port11ate1-201E # diag switch-controller switch-info qos-stats S224EPTF21001160
+Vdom: root
+
+S224EPTF21001160:
+port11 QoS Stats:
+
+ queue |              pkts |             bytes |         drop pkts
+------------------------------------------------------------------
+     0 |           2966954 |        2147426506 |                 0
+     1 |                 0 |                 0 |                 0
+     2 |                 0 |                 0 |                 0
+     3 |                24 |              1632 |                 0
+     4 |            364045 |          23299432 |                 0
+     5 |             87702 |          19449887 |                 0    <-------- AFTER making a call between phones on port11 and port12 (87702 packets)
+     6 |                 0 |                 0 |                 0
+     7 |            524693 |          81802370 |                 0
+---------------------------------------------------------------------------------------
